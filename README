@@ -1,3 +1,6 @@
+This is a fork of the project intended to take smaller subsets of UMLS content based on semantic type and write them as SKOS thesauri.
+Chris Wroe
+
 This project takes the MYSQL Unified Medical Language System (UMLS) database to convert the ontologies to RDF using OWL and SKOS as main schemas.
 
 To use it:
