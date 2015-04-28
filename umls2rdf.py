@@ -7,8 +7,9 @@ import sys
 import os
 import urllib
 from string import Template
+from functools import reduce
 import collections
-import MySQLdb
+import mysql.connector
 import pdb
 #from itertools import groupby
 
@@ -93,9 +94,9 @@ def escape(string):
 
 def get_url_term(ns,code):
     if ns[-1] == '/':
-        ret = ns + urllib.quote(code)
+        ret = ns + urllib.parse.quote(code)
     else:
-        ret = "%s/%s"%(ns,urllib.quote(code))
+        ret = "%s/%s"%(ns,urllib.parse.quote(code))
     return ret
 
 def get_rel_fragment(rel):
@@ -114,10 +115,10 @@ def get_code(reg,load_on_cuis):
         return reg[MRCONSO_CUI]
     if reg[MRCONSO_CODE]:
         return reg[MRCONSO_CODE]
-    raise AttributeError, "No code on reg [%s]"%("|".join(reg))
+    raise AttributeError("No code on reg [%s]"%("|".join(reg)))
 
 def __get_connection():
-    return MySQLdb.connect(host=conf.DB_HOST,user=conf.DB_USER,
+    return mysql.connector.connect(host=conf.DB_HOST,user=conf.DB_USER,
               passwd=conf.DB_PASS,db=conf.DB_NAME,charset='utf8',use_unicode=True)
 
 def generate_semantic_types(con,with_roots=False):
@@ -233,8 +234,8 @@ class UmlsClass(object):
 
     def code(self):
         codes = set([get_code(x,self.load_on_cuis) for x in self.atoms])
-        if len(codes) <> 1:
-            raise AttributeError, "Only one code per term."
+        if len(codes) != 1:
+            raise AttributeError("Only one code per term.")
         #if DEBUG:
             #sys.stderr.write(self.atoms)
             #sys.stderr.write(codes)
@@ -242,7 +243,7 @@ class UmlsClass(object):
 
     def getAltLabels(self,prefLabel):
         #is_pref_atoms =  filter(lambda x: x[MRCONSO_ISPREF] == 'Y', self.atoms)
-        return set([atom[MRCONSO_STR] for atom in self.atoms if atom[MRCONSO_STR] <> prefLabel])
+        return set([atom[MRCONSO_STR] for atom in self.atoms if atom[MRCONSO_STR] != prefLabel])
 
     def getPrefLabel(self):
         if self.load_on_cuis:
@@ -281,7 +282,7 @@ class UmlsClass(object):
                 pref_atom = filter(lambda x: 'P' in x[MRCONSO_TTY], self.atoms)
                 if len(pref_atom) == 1:
                     return pref_atom[0][MRCONSO_STR]
-            raise AttributeError, "Unable to select pref label"
+            raise AttributeError("Unable to select pref label")
 
     def getURLTerm(self,code):
         return get_url_term(self.ns,code)
@@ -291,7 +292,7 @@ class UmlsClass(object):
 
     def toRDF(self,fmt="Turtle",hierarchy=True,lang="eng"):
         if not fmt == "Turtle":
-            raise AttributeError, "Only fmt='Turtle' is currently supported"
+            raise AttributeError("Only fmt='Turtle' is currently supported")
         term_code = self.code()
         url_term = self.getURLTerm(term_code)
         prefLabel = self.getPrefLabel()
@@ -318,8 +319,8 @@ class UmlsClass(object):
         for rel in self.rels:
             source_code = get_rel_code_source(rel,self.load_on_cuis)
             target_code = get_rel_code_target(rel,self.load_on_cuis)
-            if source_code <> term_code:
-                raise AttributeError, "Inconsistent code in rel"
+            if source_code != term_code:
+                raise AttributeError("Inconsistent code in rel")
             # Map child relations to rdf:subClassOf (skip parent relations).
             if rel[MRREL_REL] == 'PAR':
                 continue
@@ -396,14 +397,14 @@ class UmlsAttribute(object):
 
     def toRDF(self,dockey,desc,fmt="Turtle"):
         if not fmt == "Turtle":
-            raise AttributeError, "Only fmt='Turtle' is currently supported"
+            raise AttributeError("Only fmt='Turtle' is currently supported")
         _type = ""
         if "REL" in dockey:
             _type = "ObjectProperty"
         elif dockey == "ATN":
             _type = "DatatypeProperty"
         else:
-            raise AttributeError, ("Unknown DOCKEY" + dockey)
+            raise AttributeError(("Unknown DOCKEY" + dockey))
 
         label = self.att
         if len(desc) < 20:
@@ -428,6 +429,7 @@ class UmlsOntology(object):
         self.load_on_cuis = load_on_cuis
         #self.alt_uri_code = alt_uri_code
         self.atoms = list()
+        self.cuis = list()
         self.atoms_by_code = collections.defaultdict(lambda : list())
         if not self.load_on_cuis:
             self.atoms_by_aui = collections.defaultdict(lambda : list())
@@ -446,6 +448,20 @@ class UmlsOntology(object):
         self.ont_properties = dict()
 
     def load_tables(self,limit=None):
+        #
+        load_mrsty = "SELECT sty.* FROM MRSTY sty, MRCONSO conso \
+        WHERE conso.SAB = '%s' AND conso.cui = sty.cui AND conso.suppress = 'N'"
+        load_mrsty %= self.ont_code
+        mrsty = UmlsTable("MRSTY",self.con,load_select=load_mrsty)
+        for sty in mrsty.scan(filt=None):
+            index = len(self.sty)
+            self.sty_by_cui[sty[MRSTY_CUI]].append(index)
+            self.sty.append(sty)
+        if DEBUG:
+            sys.stderr.write("length sty: %d\n\n" % len(self.sty))
+            sys.stderr.flush()
+        #
+        #
         mrconso = UmlsTable("MRCONSO",self.con)
         mrsab  = UmlsTable("MRSAB", self.con)
         for sab_rec in mrsab.scan(filt="RSAB = '" + self.ont_code + "'", limit=1):
@@ -453,11 +469,18 @@ class UmlsOntology(object):
         mrconso_filt = "SAB = '%s' AND lat = '%s' AND SUPPRESS = 'N'"%(
                                                     self.ont_code,self.lang)
         for atom in mrconso.scan(filt=mrconso_filt,limit=limit):
-            index = len(self.atoms)
-            self.atoms_by_code[get_code(atom,self.load_on_cuis)].append(index)
-            if not self.load_on_cuis:
-                self.atoms_by_aui[atom[MRCONSO_AUI]].append(index)
-            self.atoms.append(atom)
+            cui = atom[MRCONSO_CUI]
+            #print('cui is {}'.format(cui))
+            sty_coll = [self.sty[i] for i in self.sty_by_cui[cui]]
+            #print(sty_coll)
+            tui_set = set(sty[MRSTY_TUI] for sty in sty_coll)
+            if tui_set & {'T121'}:
+                index = len(self.atoms)
+                self.atoms_by_code[get_code(atom,self.load_on_cuis)].append(index)
+                self.cuis.append(cui)
+                if not self.load_on_cuis:
+                    self.atoms_by_aui[atom[MRCONSO_AUI]].append(index)
+                self.atoms.append(atom)
         if DEBUG:
             sys.stderr.write("length atoms: %d\n" % len(self.atoms))
             sys.stderr.write("length atoms_by_aui: %d\n" % len(self.atoms_by_aui))
@@ -476,9 +499,21 @@ class UmlsOntology(object):
         mrrel_filt = "SAB = '%s' AND SUPPRESS = 'N'"%self.ont_code
         field = MRREL_AUI2 if not self.load_on_cuis else MRREL_CUI2
         for rel in mrrel.scan(filt=mrrel_filt,limit=limit):
-            index = len(self.rels)
-            self.rels_by_aui_src[rel[field]].append(index)
-            self.rels.append(rel)
+            cui=''
+            include=False
+            # I may have an AUI in which case I can look up the atom from AUI, get CUI then do the same
+            if field==MRREL_AUI2:
+                aui = rel[field]
+                if aui in self.atoms_by_aui:
+                    include=True
+            else: # I may have a cui in which case I can look up semantic type and decide if not to include
+                cui = rel[field]
+                if cui in self.cuis:
+                    include=True
+            if include:
+                index = len(self.rels)
+                self.rels_by_aui_src[rel[field]].append(index)
+                self.rels.append(rel)
         if DEBUG:
             sys.stderr.write("length rels: %d\n\n" % len(self.rels))
             sys.stderr.flush()
@@ -487,9 +522,10 @@ class UmlsOntology(object):
         mrdef_filt = "SAB = '%s'"%self.ont_code
         field = MRDEF_AUI if not self.load_on_cuis else MRDEF_CUI
         for defi in mrdef.scan(filt=mrdef_filt):
-            index = len(self.defs)
-            self.defs_by_aui[defi[field]].append(index)
-            self.defs.append(defi)
+            if defi[MRDEF_CUI] in self.cuis:
+                index = len(self.defs)
+                self.defs_by_aui[defi[field]].append(index)
+                self.defs.append(defi)
         if DEBUG:
             sys.stderr.write("length defs: %d\n\n" % len(self.defs))
             sys.stderr.flush()
@@ -498,9 +534,10 @@ class UmlsOntology(object):
         mrsat_filt = "SAB = '%s' AND CODE IS NOT NULL"%self.ont_code
         field = MRSAT_CODE if not self.load_on_cuis else MRSAT_CUI
         for att in mrsat.scan(filt=mrsat_filt):
-            index = len(self.atts)
-            self.atts_by_code[att[field]].append(index)
-            self.atts.append(att)
+            if att[MRSAT_CUI] in self.cuis:
+                index = len(self.atts)
+                self.atts_by_code[att[field]].append(index)
+                self.atts.append(att)
         if DEBUG:
             sys.stderr.write("length atts: %d\n\n" % len(self.atts))
             sys.stderr.flush()
@@ -514,18 +551,7 @@ class UmlsOntology(object):
         if DEBUG:
             sys.stderr.write("length rank: %d\n\n" % len(self.rank))
             sys.stderr.flush()
-        #
-        load_mrsty = "SELECT sty.* FROM MRSTY sty, MRCONSO conso \
-        WHERE conso.SAB = '%s' AND conso.cui = sty.cui AND conso.suppress = 'N'"
-        load_mrsty %= self.ont_code
-        mrsty = UmlsTable("MRSTY",self.con,load_select=load_mrsty)
-        for sty in mrsty.scan(filt=None):
-            index = len(self.sty)
-            self.sty_by_cui[sty[MRSTY_CUI]].append(index)
-            self.sty.append(sty)
-        if DEBUG:
-            sys.stderr.write("length sty: %d\n\n" % len(self.sty))
-            sys.stderr.flush()
+        
         # Track the loaded status
         self.loaded = True
         sys.stdout.write("%s tables loaded ...\n" % self.ont_code)
@@ -567,10 +593,10 @@ class UmlsOntology(object):
                         if rel[MRREL_CUI1] == "C3264380" and rel[MRREL_REL] == "CHD":
                             is_root = True
 
-                    if len(code_source) <> 1 or len(code_target) > 1:
-                        raise AttributeError, "more than one or none codes"
+                    if len(code_source) != 1 or len(code_target) > 1:
+                        raise AttributeError("more than one or none codes")
                     if len(code_source) == 1 and len(code_target) == 1 and \
-                        code_source[0] <> code_target[0]:
+                        code_source[0] != code_target[0]:
                         code_source = code_source[0]
                         code_target = code_target[0]
                         # NOTE: the order of these append operations below is important.
@@ -618,8 +644,8 @@ class UmlsOntology(object):
             try:
                 rdf_text = term.toRDF(lang=self.lang)
                 fout.write(rdf_text)
-            except Exception, e:
-                print "ERROR dumping term ", e
+            except Exception as e:
+                print("ERROR dumping term ", e)
 
             for att in term.properties():
                 if att not in self.ont_properties:
@@ -643,7 +669,7 @@ class UmlsOntology(object):
                 continue
             doc = property_docs[prop.att]
             if "expanded_form" not in doc:
-                raise AttributeError, "expanded form not found in " + doc
+                raise AttributeError("expanded form not found in " + doc)
             _desc = doc["expanded_form"]
             if "inverse" in doc:
                 _desc = "Inverse of " + doc["inverse"]
@@ -672,13 +698,13 @@ if __name__ == "__main__":
     if not os.path.isdir(conf.OUTPUT_FOLDER):
         raise Exception("Output folder '%s' not found."%conf.OUTPUT_FOLDER)
 
-    sem_types = generate_semantic_types(con,with_roots=True)
-    output_file = os.path.join(conf.OUTPUT_FOLDER,"umls_semantictypes.ttl")
-    with codecs.open(output_file,"w","utf-8") as semfile:
-        semfile.write(PREFIXES)
-        semfile.write(sem_types)
-        semfile.flush()
-        semfile.close()
+    #sem_types = generate_semantic_types(con,with_roots=True)
+    #output_file = os.path.join(conf.OUTPUT_FOLDER,"umls_semantictypes.ttl")
+    #with codecs.open(output_file,"w","utf-8") as semfile:
+    #    semfile.write(PREFIXES)
+    #    semfile.write(sem_types)
+    #    semfile.flush()
+    #    semfile.close()
 
     sem_types = generate_semantic_types(con,with_roots=False)
     mrdoc = UmlsTable("MRDOC", con)
@@ -708,7 +734,7 @@ if __name__ == "__main__":
         ns = get_umls_url(umls_code if not alt_uri_code else alt_uri_code)
         ont = UmlsOntology(umls_code,ns,con,load_on_cuis=load_on_cuis)
         ont.load_tables()
-        fout = ont.write_into(output_file,hierarchy=(ont.ont_code <> "MSH"))
+        fout = ont.write_into(output_file,hierarchy=(ont.ont_code != "MSH"))
         ont.write_properties(fout,property_docs)
         ont.write_semantic_types(sem_types,fout)
         fout.close()
