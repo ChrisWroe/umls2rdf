@@ -131,7 +131,7 @@ def generate_semantic_types(con,with_roots=False):
 
     for stt in mrsty.scan():
         hierarchy[stt[1]].append(stt[0])
-        sty_term = """<%s> a owl:Class ;
+        sty_term = """<%s> a skos:Concept ;
 \tskos:notation "%s"^^xsd:string ;
 \tskos:prefLabel "%s"@en .
 """%(url+stt[0],stt[0],stt[2])
@@ -149,10 +149,10 @@ def generate_semantic_types(con,with_roots=False):
         for x in hierarchy[parent]:
             if node[0] != x:
                 rdfs_subclasses.append(
-                        "<%s> rdfs:subClassOf <%s> ."%(url+node[0],url+x))
+                        "<%s> skos:broader <%s> ."%(url+node[0],url+x))
 
         if len(rdfs_subclasses) == 0 and with_roots:
-                rdfs_subclasses = ["<%s> rdfs:subClassOf owl:Thing ."%(url+node[0])]
+                rdfs_subclasses = ["<%s> skos:broader owl:Thing ."%(url+node[0])]
 
         for sc in rdfs_subclasses:
             ont.append(sc)
@@ -297,7 +297,7 @@ class UmlsClass(object):
         url_term = self.getURLTerm(term_code)
         prefLabel = self.getPrefLabel()
         altLabels = self.getAltLabels(prefLabel)
-        rdf_term = """<%s> a owl:Class ;
+        rdf_term = """<%s> a skos:Concept ;
 \tskos:prefLabel \"\"\"%s\"\"\"@%s ;
 \tskos:notation \"\"\"%s\"\"\"^^xsd:string ;
 """%(url_term,escape(prefLabel),lang,escape(term_code))
@@ -336,7 +336,7 @@ class UmlsClass(object):
                 if target_code == "V-HL7V3.0" or target_code == "C1553931":
                     #skip bogus HL7V3.0 root concept
                     continue
-                rdf_term += "\trdfs:subClassOf <%s> ;\n" % (o,)
+                rdf_term += "\tskos:broader <%s> ;\n" % (o,)
             else:
                 p = self.getURLTerm(get_rel_fragment(rel))
                 o = self.getURLTerm(target_code)
@@ -429,7 +429,7 @@ class UmlsOntology(object):
         self.load_on_cuis = load_on_cuis
         #self.alt_uri_code = alt_uri_code
         self.atoms = list()
-        self.cuis = list()
+        self.cuis = dict()
         self.atoms_by_code = collections.defaultdict(lambda : list())
         if not self.load_on_cuis:
             self.atoms_by_aui = collections.defaultdict(lambda : list())
@@ -477,7 +477,7 @@ class UmlsOntology(object):
             if tui_set & {'T121'}:
                 index = len(self.atoms)
                 self.atoms_by_code[get_code(atom,self.load_on_cuis)].append(index)
-                self.cuis.append(cui)
+                self.cuis[cui]=True
                 if not self.load_on_cuis:
                     self.atoms_by_aui[atom[MRCONSO_AUI]].append(index)
                 self.atoms.append(atom)
@@ -533,7 +533,11 @@ class UmlsOntology(object):
         mrsat = UmlsTable("MRSAT",self.con)
         mrsat_filt = "SAB = '%s' AND CODE IS NOT NULL"%self.ont_code
         field = MRSAT_CODE if not self.load_on_cuis else MRSAT_CUI
+        i=0
         for att in mrsat.scan(filt=mrsat_filt):
+            i=i+1
+            if i%100==0:
+                print('done {} attributes'.format(i))
             if att[MRSAT_CUI] in self.cuis:
                 index = len(self.atts)
                 self.atts_by_code[att[field]].append(index)
@@ -698,13 +702,13 @@ if __name__ == "__main__":
     if not os.path.isdir(conf.OUTPUT_FOLDER):
         raise Exception("Output folder '%s' not found."%conf.OUTPUT_FOLDER)
 
-    #sem_types = generate_semantic_types(con,with_roots=True)
-    #output_file = os.path.join(conf.OUTPUT_FOLDER,"umls_semantictypes.ttl")
-    #with codecs.open(output_file,"w","utf-8") as semfile:
-    #    semfile.write(PREFIXES)
-    #    semfile.write(sem_types)
-    #    semfile.flush()
-    #    semfile.close()
+    sem_types = generate_semantic_types(con,with_roots=True)
+    output_file = os.path.join(conf.OUTPUT_FOLDER,"umls_semantictypes.ttl")
+    with codecs.open(output_file,"w","utf-8") as semfile:
+        semfile.write(PREFIXES)
+        semfile.write(sem_types)
+        semfile.flush()
+        semfile.close()
 
     sem_types = generate_semantic_types(con,with_roots=False)
     mrdoc = UmlsTable("MRDOC", con)
@@ -734,7 +738,7 @@ if __name__ == "__main__":
         ns = get_umls_url(umls_code if not alt_uri_code else alt_uri_code)
         ont = UmlsOntology(umls_code,ns,con,load_on_cuis=load_on_cuis)
         ont.load_tables()
-        fout = ont.write_into(output_file,hierarchy=(ont.ont_code != "MSH"))
+        fout = ont.write_into(output_file,hierarchy=True)#(ont.ont_code != "MSH"))
         ont.write_properties(fout,property_docs)
         ont.write_semantic_types(sem_types,fout)
         fout.close()
