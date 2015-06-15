@@ -24,6 +24,19 @@ PREFIXES = """
 @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 @prefix umls: <http://bioportal.bioontology.org/ontologies/umls/> .
+@prefix cycAnnot: <http://sw.cyc.com/CycAnnotations_v1#> .
+@prefix cyc: <http://sw.cyc.com/concept/> .
+@prefix dbpedia: <http://dbpedia.org/resource/> .
+@prefix ctag: <http://commontag.org/ns#> .
+@prefix opencyc: <http://sw.opencyc.org/concept/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix csw: <http://semantic-web.at/ontologies/csw.owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix dc: <http://purl.org/dc/elements/1.1/> .
+@prefix freebase: <http://rdf.freebase.com/ns/> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix tags: <http://www.holygoat.co.uk/owl/redwood/0.1/tags/> .
+@prefix bmj_umls: <http://bmj.com/catalogue/UMLS/> .
 
 """
 
@@ -42,6 +55,9 @@ HAS_STY = "umls:hasSTY"
 HAS_AUI = "umls:aui"
 HAS_CUI = "umls:cui"
 HAS_TUI = "umls:tui"
+
+UMLS_CONCEPT_SCHEME_URL = "http://10.1.238.36/ClinicalConcepts/0"
+UMLS_SEMANTIC_TYPE_SCHEME_URL = "http://10.1.238.36/ClinicalConcepts/1"
 
 MRCONSO_CODE = 13
 MRCONSO_AUI = 7
@@ -80,8 +96,22 @@ MRRANK_RANK = 0
 
 MRSTY_CUI = 0
 MRSTY_TUI = 1
+MRSTY_STN = 2
 
 MRSAB_LAT = 19
+
+UMLS_SEMANTIC_TYPE_ROOTS = ['A1.4']
+
+def in_semantic_types(stn_set):
+    match=False
+    for stn in stn_set:
+        for m_stn in UMLS_SEMANTIC_TYPE_ROOTS:
+            if stn.startswith(m_stn):
+                match=True
+                break
+        if match==True:
+            break
+    return match
 
 def get_umls_url(code):
     return "%s%s/"%(conf.UMLS_BASE_URI,code)
@@ -131,7 +161,7 @@ def generate_semantic_types(con,with_roots=False):
 
     for stt in mrsty.scan():
         hierarchy[stt[1]].append(stt[0])
-        sty_term = """<%s> a skos:Concept ;
+        sty_term = """<%s> a skos:Concept, bmj_umls:SemanticType ;
 \tskos:notation "%s"^^xsd:string ;
 \tskos:prefLabel "%s"@en .
 """%(url+stt[0],stt[0],stt[2])
@@ -150,13 +180,21 @@ def generate_semantic_types(con,with_roots=False):
             if node[0] != x:
                 rdfs_subclasses.append(
                         "<%s> skos:broader <%s> ."%(url+node[0],url+x))
-
+                rdfs_subclasses.append(
+                        "<%s> skos:narrower <%s> ."%(url+x,url+node[0]))
         if len(rdfs_subclasses) == 0 and with_roots:
-                rdfs_subclasses = ["<%s> skos:broader owl:Thing ."%(url+node[0])]
-
+                rdfs_subclasses.append("<%s> skos:isTopConceptOf <%s> ." % (url+node[0],UMLS_SEMANTIC_TYPE_SCHEME_URL))
+                rdfs_subclasses.append("<%s> skos:hasTopConcept <%s> ." % (UMLS_SEMANTIC_TYPE_SCHEME_URL,url+node[0]))
         for sc in rdfs_subclasses:
             ont.append(sc)
-    data_ont_ttl = "\n".join(ont)
+    data_ont_ttl = """<http://10.1.238.36/UMLSSemanticTypes/0> csw:hierarchyRoot "true"^^xsd:boolean ;
+        csw:hierarchyRootType skos:ConceptScheme ;
+        a skos:ConceptScheme ;
+        dcterms:title "UMLS Semantic Types"@en ;
+        rdfs:label "UMLS Semantic Types"@en ;
+        dcterms:creator "cwroe@bmj.com"@en ;
+        dcterms:created "2015-05-05T13:31:23Z"^^xsd:dateTime .\n"""
+    data_ont_ttl+= "\n".join(ont)
     return data_ont_ttl
 
 
@@ -290,14 +328,17 @@ class UmlsClass(object):
     def properties(self):
         return self.class_properties
 
-    def toRDF(self,fmt="Turtle",hierarchy=True,lang="eng"):
+    def toRDF(self,fmt="Turtle",hierarchy=True,lang="en"):
         if not fmt == "Turtle":
             raise AttributeError("Only fmt='Turtle' is currently supported")
         term_code = self.code()
         url_term = self.getURLTerm(term_code)
         prefLabel = self.getPrefLabel()
         altLabels = self.getAltLabels(prefLabel)
-        rdf_term = """<%s> a skos:Concept ;
+        
+        inverse_rdf_term = ""
+        
+        rdf_term = """<%s> a skos:Concept, bmj_umls:UMLSConcept  ;
 \tskos:prefLabel \"\"\"%s\"\"\"@%s ;
 \tskos:notation \"\"\"%s\"\"\"^^xsd:string ;
 """%(url_term,escape(prefLabel),lang,escape(term_code))
@@ -308,8 +349,8 @@ class UmlsClass(object):
                                                             set(altLabels))))
 
         if self.is_root:
-            rdf_term += '\trdfs:subClassOf owl:Thing ;\n'
-
+            rdf_term += "\t skos:topConceptOf <%s> ;\n" % (UMLS_CONCEPT_SCHEME_URL)
+            inverse_rdf_term += "<%s> skos:hasTopConcept <%s> .\n" % (UMLS_CONCEPT_SCHEME_URL,url_term)
         if len(self.defs) > 0:
             rdf_term += """\tskos:definition %s ;
 """%(" , ".join(map(lambda x: '\"\"\"%s\"\"\"@%s'%(escape(x[MRDEF_DEF]),lang),
@@ -337,13 +378,14 @@ class UmlsClass(object):
                     #skip bogus HL7V3.0 root concept
                     continue
                 rdf_term += "\tskos:broader <%s> ;\n" % (o,)
+                inverse_rdf_term += "<%s> skos:narrower <%s> .\n" % (o,url_term)
             else:
                 p = self.getURLTerm(get_rel_fragment(rel))
-                o = self.getURLTerm(target_code)
-                rdf_term += "\t<%s> <%s> ;\n" % (p,o)
-                if p not in self.class_properties:
-                    self.class_properties[p] = \
-                        UmlsAttribute(p,get_rel_fragment(rel))
+                #o = self.getURLTerm(target_code)
+                #rdf_term += "\t<%s> <%s> ;\n" % (p,o)
+                #if p not in self.class_properties:
+                #    self.class_properties[p] = \
+                #        UmlsAttribute(p,get_rel_fragment(rel))
 
         for att in self.atts:
             atn = att[MRSAT_ATN]
@@ -369,12 +411,14 @@ class UmlsClass(object):
         #    rdf_term += """\t%s \"\"\"%s\"\"\"^^xsd:string ;\n"""%(HAS_AUI,t)
         for t in cuis:
             rdf_term += """\t%s \"\"\"%s\"\"\"^^xsd:string ;\n"""%(HAS_CUI,t)
-        for t in set(types):
-            rdf_term += """\t%s \"\"\"%s\"\"\"^^xsd:string ;\n"""%(HAS_TUI,t)
+        #for t in set(types):
+        #    rdf_term += """\t%s \"\"\"%s\"\"\"^^xsd:string ;\n"""%(HAS_TUI,t)
         for t in set(types):
             rdf_term += """\t%s <%s> ;\n"""%(HAS_STY,get_umls_url("STY")+t)
-
-        return rdf_term + " .\n\n"
+            
+        rdf_term += " .\n\n"
+        rdf_term+=inverse_rdf_term
+        return rdf_term + "\n"
 
 
 
@@ -445,6 +489,7 @@ class UmlsOntology(object):
         self.sty_by_cui = collections.defaultdict(lambda : list())
         self.cui_roots = set()
         self.lang = None
+        self.rdf_lang = "en"
         self.ont_properties = dict()
 
     def load_tables(self,limit=None):
@@ -466,15 +511,20 @@ class UmlsOntology(object):
         mrsab  = UmlsTable("MRSAB", self.con)
         for sab_rec in mrsab.scan(filt="RSAB = '" + self.ont_code + "'", limit=1):
             self.lang = sab_rec[MRSAB_LAT].lower()
-        mrconso_filt = "SAB = '%s' AND lat = '%s' AND SUPPRESS = 'N'"%(
+            if self.lang=="eng":
+                self.rdf_lang="en"
+            
+        mrconso_filt = "SAB = '{0}' AND lat = '{1}' AND SUPPRESS = 'N'".format(
                                                     self.ont_code,self.lang)
+        if self.ont_code=="MSH":
+            mrconso+=" AND CODE NOT like 'C%'" # exclude supplementals?
         for atom in mrconso.scan(filt=mrconso_filt,limit=limit):
             cui = atom[MRCONSO_CUI]
             #print('cui is {}'.format(cui))
             sty_coll = [self.sty[i] for i in self.sty_by_cui[cui]]
             #print(sty_coll)
-            tui_set = set(sty[MRSTY_TUI] for sty in sty_coll)
-            if tui_set & {'T121'}:
+            stn_set = set(sty[MRSTY_STN] for sty in sty_coll)
+            if True: #in_semantic_types(stn_set):
                 index = len(self.atoms)
                 self.atoms_by_code[get_code(atom,self.load_on_cuis)].append(index)
                 self.cuis[cui]=True
@@ -534,17 +584,19 @@ class UmlsOntology(object):
         mrsat_filt = "SAB = '%s' AND CODE IS NOT NULL"%self.ont_code
         field = MRSAT_CODE if not self.load_on_cuis else MRSAT_CUI
         i=0
-        for att in mrsat.scan(filt=mrsat_filt):
-            i=i+1
-            if i%100==0:
-                print('done {} attributes'.format(i))
-            if att[MRSAT_CUI] in self.cuis:
-                index = len(self.atts)
-                self.atts_by_code[att[field]].append(index)
-                self.atts.append(att)
-        if DEBUG:
-            sys.stderr.write("length atts: %d\n\n" % len(self.atts))
-            sys.stderr.flush()
+        
+        # don't do attributes for now
+        #for att in mrsat.scan(filt=mrsat_filt):
+        #    i=i+1
+        #    if i%100==0:
+        #        print('done {} attributes'.format(i))
+        #    if att[MRSAT_CUI] in self.cuis:
+        #        index = len(self.atts)
+        #        self.atts_by_code[att[field]].append(index)
+        #        self.atts.append(att)
+        #if DEBUG:
+        #    sys.stderr.write("length atts: %d\n\n" % len(self.atts))
+        #    sys.stderr.flush()
         #
         mrrank = UmlsTable("MRRANK",self.con)
         mrrank_filt = "SAB = '%s'"%self.ont_code
@@ -569,11 +621,17 @@ class UmlsOntology(object):
             code_atoms = [self.atoms[row] for row in self.atoms_by_code[code]]
             field = MRCONSO_CUI if self.load_on_cuis else MRCONSO_AUI
             ids = map(lambda x: x[field], code_atoms)
+            cuis = map(lambda x: x[MRCONSO_CUI], code_atoms)
             rels = list()
             for _id in ids:
                 rels += [self.rels[x] for x in self.rels_by_aui_src[_id]]
             rels_to_class = list()
             is_root = False
+            # TODO: put a MeSH drug root in?
+            if self.ont_code == "SNOMEDCT-US" and ("C0013227" in cuis): #pharmaceutical product
+                is_root = True
+            #if self.ont_code == "MSH" and ("C0220806" in cuis):    # chemical root
+            #    is_root = True
             if self.load_on_cuis:
                 rels_to_class = rels
                 for rel in rels_to_class:
@@ -596,7 +654,7 @@ class UmlsOntology(object):
                         # TODO: patch to fix ICD10-CM hierachy.
                         if rel[MRREL_CUI1] == "C3264380" and rel[MRREL_REL] == "CHD":
                             is_root = True
-
+                   
                     if len(code_source) != 1 or len(code_target) > 1:
                         raise AttributeError("more than one or none codes")
                     if len(code_source) == 1 and len(code_target) == 1 and \
@@ -646,7 +704,7 @@ class UmlsOntology(object):
         fout.write(ONTOLOGY_HEADER.substitute(header_values))
         for term in self.terms():
             try:
-                rdf_text = term.toRDF(lang=self.lang)
+                rdf_text = term.toRDF(lang=self.rdf_lang)
                 fout.write(rdf_text)
             except Exception as e:
                 print("ERROR dumping term ", e)
@@ -740,7 +798,7 @@ if __name__ == "__main__":
         ont.load_tables()
         fout = ont.write_into(output_file,hierarchy=True)#(ont.ont_code != "MSH"))
         ont.write_properties(fout,property_docs)
-        ont.write_semantic_types(sem_types,fout)
+        #ont.write_semantic_types(sem_types,fout)
         fout.close()
         sys.stdout.write("done!\n\n")
         sys.stdout.flush()
